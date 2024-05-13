@@ -47,6 +47,13 @@ def validate_images():
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)})
+    
+@app.route('/ping', methods=['GET'])
+def ping():
+    try:
+        return "", 200
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
