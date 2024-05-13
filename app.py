@@ -41,7 +41,7 @@ def validate_images():
     try:
         data = request.get_json(force=True)
         results = {}
-        for url in data:
+        for url in data['images']:
             result = predict_image(url)
             results[url] = result
         return jsonify(results)
