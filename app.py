@@ -8,8 +8,8 @@ from io import BytesIO
 
 app = Flask(__name__)
 CORS(app)
-model = tf.keras.models.load_model('keras_model.h5', compile=False)
-class_names = open("labels.txt", "r").readlines()
+model = tf.keras.models.load_model('keras_model_with_unknown_2.h5', compile=False)
+class_names = open("labels_with_unknown_2.txt", "r").readlines()
 
 def preprocess_image(image):
     # Resize image to match model input shape
