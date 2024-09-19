@@ -1,0 +1,9 @@
+To set up:
+python11 -m venv myenv (create venv, skip step if done previously)
+myenv\Scripts\activate
+pip install -r requirements.txt
+python11 app.py
+
+To run:
+myenv\Scripts\activate
+python11 app.py

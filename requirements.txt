@@ -12,7 +12,7 @@ gast==0.4.0
 google-auth==2.29.0
 google-auth-oauthlib==1.0.0
 google-pasta==0.2.0
-grpcio==1.63.0
+grpcio==1.63.0s
 h5py==3.11.0
 idna==3.7
 itsdangerous==2.2.0
@@ -21,7 +21,7 @@ keras==2.13.1
 libclang==18.1.1
 Markdown==3.6
 MarkupSafe==2.1.5
-numpy==1.24.3
+numpy==1.24.2
 oauthlib==3.2.2
 opt-einsum==3.3.0
 packaging==24.0
