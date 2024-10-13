@@ -1,0 +1,422 @@
+"use client";
+
+import VideoPlayer from "@/app/components/modals/VideoPlayer";
+import { Button, Card, Col, Image, Modal, Row, Spin, Typography } from "antd";
+import LiveStreamPlayer from "./LiveStreamPlayer";
+import CameraDataTable from "../../visualisations/cameras/CameraDataTable";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRoomContext } from "@/contexts/DashboardContext";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import TemporalAPI from "@/api/temporal/TemporalAPI";
+import { EntityType } from "@/types/Entity";
+import { getStartOfLastNDay } from "@/utils/date";
+import { getTimeOneHourFromNow } from "@/utils/date";
+import Notification, { NotificationType } from "@/utils/notifications";
+import { DeviceMetric, FALLBACK_IMAGE } from "@/utils/constants";
+import { TemporalAttributeProperty, TemporalDataAPIResponse } from "@/types/Temporal";
+import { set } from "date-fns/fp/set";
+import Meta from "antd/es/card/Meta";
+import FaceRecAPI from "@/api/face-rec/FaceRecAPI";
+
+const { Title } = Typography;
+
+export default function IntruderDetection() {
+    const selectedCameraDevice = "urn:ngsi-ld:Camera:Camera001";
+    const selectedRobotDevice = "urn:ngsi-ld:Robot:Robot001";
+    const { selectedRoom } = useRoomContext();
+    const [isPageActive, setIsPageActive] = useState<boolean>(true);
+    const [lastAlertURL, setLastAlertURL] = useState<string>("");
+    const [modalVisible, setModalVisible] = useState<boolean>(false);
+    const [modalContent, setModalContent] = useState<JSX.Element | null>(null);
+    const [videoHistory, setVideoHistory] = useState<[string, string, string, string][]>([]);
+    const [prevLastAlert, setPrevLastAlert] = useState<
+        [string, string, string, string] | undefined
+    >();
+
+    const videoRef = useRef<HTMLVideoElement | null>(null);
+
+    useEffect(() => {
+        setIsPageActive(true);
+
+        return () => {
+            setIsPageActive(false);
+        };
+    }, []);
+
+    const {
+        data: cameraData,
+        isLoading: cameraDataLoading,
+        isError: cameraDataError,
+    } = useQuery({
+        queryKey: ["get_camera_data", selectedRoom, selectedCameraDevice],
+        queryFn: () =>
+            TemporalAPI.getEntityTemporalData(
+                selectedRoom,
+                EntityType.CAMERA,
+                "before",
+                "observedAt",
+                {
+                    id: selectedCameraDevice,
+                    timeAt: getTimeOneHourFromNow(),
+                    lastN: 50,
+                }
+            ),
+    });
+
+    const {
+        data: latestCameraData,
+        isLoading: latestCameraDataLoading,
+        isError: latestCameraError,
+    } = useQuery({
+        queryKey: ["get_latest_camera_data", selectedRoom, selectedCameraDevice],
+        queryFn: () =>
+            TemporalAPI.getEntityTemporalData(
+                selectedRoom,
+                EntityType.CAMERA,
+                "before",
+                "observedAt",
+                {
+                    id: selectedCameraDevice,
+                    timeAt: getTimeOneHourFromNow(),
+                    lastN: 1,
+                }
+            ),
+        refetchInterval: 4000,
+        enabled: isPageActive,
+    });
+
+    const {
+        data: robotImage,
+        isLoading: robotImageLoading,
+        isError: robotImageError,
+    } = useQuery({
+        queryKey: ["get_latest_robot_data", selectedRoom, selectedRobotDevice],
+        queryFn: () =>
+            TemporalAPI.getEntityTemporalData(
+                selectedRoom,
+                EntityType.ROBOT,
+                "before",
+                "observedAt",
+                {
+                    id: selectedRobotDevice,
+                    timeAt: getTimeOneHourFromNow(),
+                    lastN: 50,
+                }
+            ),
+        refetchInterval: 4000,
+        enabled: isPageActive,
+    });
+
+    const {
+        data: faceRecData,
+        isPending: faceRecLoading,
+        mutate: getFaceRecData,
+    } = useMutation({
+        mutationKey: ["get_face_rec_data"],
+        mutationFn: (images: string[]) => FaceRecAPI.validate(images),
+        onError: (error) => {
+            Notification.sendNotification(
+                NotificationType.ERROR,
+                "Failed to load data",
+                "Failed to get face recognition data. Please try again later."
+            );
+
+            console.log(error);
+        },
+    });
+
+    useEffect(() => {
+        if (cameraDataError) {
+            Notification.sendNotification(
+                NotificationType.ERROR,
+                "Failed to load data",
+                "Failed to get camera data. Please try again later."
+            );
+        }
+        if (robotImageError) {
+            Notification.sendNotification(
+                NotificationType.ERROR,
+                "Failed to load data",
+                "Failed to get robot data. Please try again later."
+            );
+        }
+    }, [cameraDataError, robotImageError]);
+
+    useEffect(() => {
+        if (!cameraData || cameraData.length === 0) {
+            return;
+        }
+
+        const attr = cameraData[0][DeviceMetric.IMAGE_PATH] as TemporalAttributeProperty<string>;
+        getFaceRecData(
+            attr.values
+                .slice(1, 10)
+                .filter(([val, _]) => val.includes("alerts"))
+                .map(([val, _]) => val)
+        );
+    }, [cameraData, getFaceRecData]);
+
+    const imageSnapshots = useMemo(() => {
+        const output: { lastRobotImage: string; robotImageHistory: string[] } = {
+            lastRobotImage: FALLBACK_IMAGE,
+            robotImageHistory: [],
+        };
+
+        if (!robotImage || robotImage.length === 0) {
+            return output;
+        }
+
+        const resp = robotImage[0] as TemporalDataAPIResponse;
+
+        const snapshot = resp[DeviceMetric.IMAGE_PATH] as TemporalAttributeProperty<string>;
+
+        if (!snapshot) {
+            return output;
+        }
+
+        output.lastRobotImage = snapshot.values[0][0];
+        output.robotImageHistory = snapshot.values.slice(1, 6).map(([url, _]) => url);
+
+        return output;
+    }, [robotImage]);
+
+    /**
+     * Video History side effect
+     */
+    useEffect(() => {
+        if (videoHistory.length > 0 || !cameraData || !faceRecData || cameraData.length === 0) {
+            return;
+        }
+
+        const resp = cameraData[0] as TemporalDataAPIResponse;
+
+        const snapshot = resp[DeviceMetric.MEDIA_URL] as TemporalAttributeProperty<string>;
+        const timestamps = resp[DeviceMetric.TIMESTAMP] as TemporalAttributeProperty<string>;
+        const images = resp[DeviceMetric.IMAGE_PATH] as TemporalAttributeProperty<string>;
+        const names = resp[DeviceMetric.NAMES] as TemporalAttributeProperty<string>;
+
+        if (!snapshot) {
+            return;
+        }
+
+        let output = snapshot.values
+            .slice(1, 10)
+            .filter(([url, _]) => url.includes("alerts"))
+            .map(([url, tsp]) => {
+                const timestamp = timestamps.values.find(([_, ts]) => tsp === ts);
+                const image = images.values.find(([_, ts]) => tsp === ts);
+                const nameEntry = names.values.find(([_, ts]) => tsp === ts);
+                let name = nameEntry ? nameEntry[0] : "Unknown";
+
+                if (image) {
+                    name = (faceRecData[image[0]] as { class: string; confidence: number }).class;
+                }
+
+                return [
+                    url,
+                    image ? image[0] : FALLBACK_IMAGE,
+                    name,
+                    timestamp ? timestamp[0] : "",
+                ];
+            }) as [string, string, string, string][];
+
+        setVideoHistory(output);
+    }, [cameraData, faceRecData, videoHistory]);
+
+    /**
+     * Latest Video side effect
+     */
+    useEffect(() => {
+        if (!latestCameraData || latestCameraData.length === 0) {
+            return;
+        }
+
+        const resp = latestCameraData[0] as TemporalDataAPIResponse;
+        const snapshot = resp[DeviceMetric.MEDIA_URL] as TemporalAttributeProperty<string>;
+
+        if (!snapshot) {
+            return;
+        }
+
+        const lastCameraVideo = snapshot.values[0][0];
+
+        if (lastAlertURL !== "" && lastCameraVideo !== lastAlertURL) {
+            // Dynamically load the video
+            const video = videoRef.current;
+            if (video) {
+                video.src = lastCameraVideo;
+                video.load();
+            }
+
+            Notification.sendNotification(
+                NotificationType.WARNING,
+                "New Alert",
+                "Intruder detected, Robot Activated."
+            );
+
+            // Make inference
+            const images = resp[DeviceMetric.IMAGE_PATH] as TemporalAttributeProperty<string>;
+            const names = resp[DeviceMetric.NAMES] as TemporalAttributeProperty<string>;
+            const timestamps = resp[DeviceMetric.TIMESTAMP] as TemporalAttributeProperty<string>;
+            const [imageURL] = images.values[0];
+            const [name] = names.values[0];
+            const [timestamp] = timestamps.values[0];
+
+            getFaceRecData([imageURL]);
+            setPrevLastAlert([lastAlertURL, imageURL, name, timestamp]);
+            setLastAlertURL(lastCameraVideo);
+        }
+    }, [latestCameraData, lastAlertURL, getFaceRecData]);
+
+    useEffect(() => {
+        if (!prevLastAlert || !faceRecData) {
+            return;
+        }
+
+        const [prevURL, imageURL, _, timestamp] = prevLastAlert;
+        const result = faceRecData[imageURL] as { class: string; confidence: number };
+
+        setVideoHistory((prev) => {
+            return [[prevURL, imageURL, result.class, timestamp], ...prev];
+        });
+
+        setPrevLastAlert(undefined);
+    }, [prevLastAlert, faceRecData]);
+
+    useEffect(() => {
+        let lastCameraVideo = "";
+
+        if (!cameraData || cameraData.length === 0) {
+            return;
+        }
+
+        const resp = cameraData[0] as TemporalDataAPIResponse;
+        const snapshot = resp[DeviceMetric.MEDIA_URL] as TemporalAttributeProperty<string>;
+
+        if (!snapshot) {
+            return;
+        }
+
+        lastCameraVideo = snapshot.values[0][0];
+
+        // Dynamically load the video
+        const video = videoRef.current;
+        if (video) {
+            video.src = lastCameraVideo;
+            video.load();
+        }
+
+        // if (lastAlertURL !== "" && lastCameraVideo !== lastAlertURL) {
+        //     Notification.sendNotification(
+        //         NotificationType.WARNING,
+        //         "New Alert",
+        //         "Intruder detected, Robot Activated."
+        //     );
+        // }
+
+        setLastAlertURL(lastCameraVideo);
+    }, [cameraData, lastAlertURL]);
+
+    const onCardItemClick = (actionItem: JSX.Element | null) => {
+        setModalContent(actionItem);
+        setModalVisible(true);
+    };
+
+    const onModalClose = () => {
+        setModalVisible(false);
+        setModalContent(null);
+    };
+
+    const getVideoPlayer = (url: string) => {
+        return (
+            <video className="mt-8" width="100%" height="100%" controls>
+                <source src={url} type="video/mp4" />
+                Your browser does not support the video tag.
+            </video>
+        );
+    };
+
+    return (
+        <>
+            <div className="flex flex-col w-full h-full gap-4">
+                <LiveStreamPlayer height="40vh" />
+                <div className="flex flex-row justify-around gap-2 items-center">
+                    <div className="w-1/2">
+                        <Spin spinning={cameraDataLoading}>
+                            <video ref={videoRef} controls width="100%" height="100%">
+                                Your browser does not support the video tag.
+                            </video>
+                        </Spin>
+                    </div>
+                    <div className="w-1/2">
+                        <Spin spinning={robotImageLoading}>
+                            <img src={imageSnapshots.lastRobotImage} alt="last camera image" />
+                        </Spin>
+                    </div>
+                </div>
+
+                <div className="flex flex-row justify-around gap-2">
+                    <div className="w-1/2">
+                        <Title type="secondary" level={5}>
+                            Past Person Detected Videos
+                        </Title>
+                        <Spin spinning={robotImageLoading || faceRecLoading}>
+                            <Card styles={{ body: { height: "60vh", overflowX: "scroll" } }}>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {videoHistory.map(([url, image, person, timestamp], idx) => (
+                                        <Card
+                                            key={`card-${idx}`}
+                                            hoverable
+                                            onClick={() => onCardItemClick(getVideoPlayer(url))}
+                                            cover={<img src={image} alt="Alert Video History" />}>
+                                            <Meta
+                                                title={person}
+                                                description={`Time: ${timestamp}`}
+                                            />
+                                        </Card>
+                                    ))}
+                                </div>
+                            </Card>
+                        </Spin>
+                    </div>
+
+                    <div className="w-1/2">
+                        <Title type="secondary" level={5}>
+                            Past Robot Images
+                        </Title>
+                        <Spin spinning={cameraDataLoading}>
+                            <Card styles={{ body: { height: "60vh", overflowX: "scroll" } }}>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {imageSnapshots.robotImageHistory.map((url, idx) => (
+                                        <Image key={idx} src={url} alt="Camera Image" />
+                                    ))}
+                                </div>
+                            </Card>
+                        </Spin>
+                    </div>
+                </div>
+            </div>
+            <Modal
+                centered
+                open={modalVisible && !!modalContent}
+                onCancel={onModalClose}
+                footer={null}
+                width="75%"
+                destroyOnClose>
+                {modalContent}
+            </Modal>
+            {/* <Row gutter={[16, 16]}>
+                <Col span={24}>
+                    <div style={{ height: "25vh" }}>
+                        <LiveStreamPlayer />
+                    </div>
+                </Col>
+                <Col span={12}></Col>
+                <Col span={12}></Col>
+
+                <Col span={12}></Col>
+                <Col span={12}></Col>
+            </Row> */}
+        </>
+    );
+}
